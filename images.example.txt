@@ -1,0 +1,22 @@
+# Paste the links your colleague sends, exactly as they arrive.
+#
+# A heading is any line ending in a colon, matching the input file name
+# without .js. Case does not matter, so "Lisbon-en:" finds input/lisbon-en.js.
+# The four URLs under it are taken in order: first is IMAGE_1, last is IMAGE_4.
+# Blank lines are ignored. Lines starting with # are ignored.
+#
+# Save this as images.txt to start using it.
+
+Lisbon-en:
+
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_LisbonImage1.jpg
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_LisbonImage2.jpg
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_LisbonImage3.jpg
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_LisbonImage4.jpg
+
+Milan-en:
+
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_MilanImage1.jpg
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_MilanImage2.jpg
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_MilanImage3.jpg
+https://images.prismic.io/wunderflatscontent/XXXXXXXXXXXXXXXX_MilanImage4.jpg

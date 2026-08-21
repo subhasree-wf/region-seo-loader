@@ -1,0 +1,14 @@
+# Input files come from content, output files are generated per run.
+# Keep the folders, ignore what goes in them.
+input/*
+!input/.gitkeep
+
+output/*
+!output/.gitkeep
+
+# Real Prismic links. images.example.txt is committed instead.
+images.txt
+images.json
+
+# macOS
+.DS_Store
