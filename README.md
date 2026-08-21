@@ -1,4 +1,4 @@
-# region-loader
+# region-seo-loader
 
 A helper for loading a city landing page file into MongoDB.
 
@@ -19,7 +19,7 @@ Then set up a folder like this:
 
 ```
 your-folder/
-  region-loader.js
+  region-seo-loader.js
   images.txt        <- optional, the script offers to create it
   input/            <- drop the files you are given here
   output/           <- created for you
@@ -40,7 +40,7 @@ https://images.prismic.io/wunderflatscontent/Q-BIw5ygzTsr1ypG_LisbonImage1.jpg
 **3. Run it with just the name.** No path, no `.js` needed:
 
 ```bash
-node region-loader.js lisbon-en
+node region-seo-loader.js lisbon-en
 ```
 
 **4. Paste the image links.** The script reads the file first, so it can tell you where each image is going before it asks. If the links are already saved in `images.txt` (see below) it uses those and asks nothing:
@@ -94,7 +94,7 @@ The finished file is now at `output/lisbon-en.js`, ready to hand to an admin.
 ### Try it first without touching a database
 
 ```bash
-node region-loader.js lisbon-en --dry-run
+node region-seo-loader.js lisbon-en --dry-run
 ```
 
 Everything up to the database, saves `output/lisbon-en.js`, then stops.
@@ -102,7 +102,7 @@ Everything up to the database, saves `output/lisbon-en.js`, then stops.
 ## Doing every city at once
 
 ```bash
-node region-loader.js --all
+node region-seo-loader.js --all
 ```
 
 Takes every `.js` in `input/`, in alphabetical order. Naming a single city still works exactly as before, `--all` just replaces the name.
@@ -200,7 +200,7 @@ Running it twice is safe.
 
 Pasting four URLs into prompts works, but it is easier to check them when they sit in a file you can read. `images.txt` is that file. One file for every city, so it never adds to the pile in `input/`.
 
-It lives next to `region-loader.js`, and the format is just what your colleague already sends you:
+It lives next to `region-seo-loader.js`, and the format is just what your colleague already sends you:
 
 ```
 Lisbon-en:
@@ -302,22 +302,64 @@ px3600: ...LisbonImage1.jpg?auto=format,compress&w=3600
 
 The number after `w=` always matches the key it sits on. Four images, six sizes, 24 links written for you. The asset ID from your link is kept exactly as pasted, so the images actually load. These become `IMAGE_1` to `IMAGE_4` at the top of the file, just after `EMPTY_IMAGE`, which is never touched.
 
-**Images, part 2: putting them in the right place.** The file you receive has `EMPTY_IMAGE` in every single slot. The script decides where the four real images go:
+**Images, part 2: putting them in the right place.** The file you receive has `EMPTY_IMAGE` in every single slot. The script decides where the four real images go, **by heading, never by counting**:
 
-| Image | Goes on |
+| Image | Goes on the section whose heading matches |
 | --- | --- |
-| `IMAGE_1` | first h2 |
-| `IMAGE_2` | second h2 |
-| `IMAGE_3` | the h3 inside the second h2 whose heading starts with "Sightseeing" |
-| `IMAGE_4` | third h2 |
+| `IMAGE_1` | `Tips for Finding an Apartment...` (h2) |
+| `IMAGE_2` | `Living in <City>` (h2) |
+| `IMAGE_3` | `Sightseeing in <City>` (h3, anywhere in the document) |
+| `IMAGE_4` | `Frequently Asked Questions...` (h2) |
 
 Every other slot stays `EMPTY_IMAGE`.
 
-`IMAGE_3` is found by its heading, not by counting. In the Lisbon file "Sightseeing in Lisbon" happens to be the second h3, but looking for the word means it still lands correctly if a city orders its sections differently. You will see one of these:
+**Why heading and not position.** City files are not all the same shape. "Rent Prices" is a separate h2 in Brussels, an h3 inside "Tips" in Zurich, and absent in Lisbon, Madrid and Milan. Counting sections put Brussels' second image on "Rent Prices" and pushed everything after it along by one. Matching the heading gets all of them right without knowing how many sections a city has.
 
-- nothing extra printed, it found the heading where expected
-- `the "Sightseeing" h3 is #1, not the usual #2. Matched on heading text, not position.` — found it elsewhere, fine
-- `no h3 heading starts with "Sightseeing" ... Falling back to h3 #2 ... Check this one.` — that city words it differently, so open the output and confirm
+Position is only a fallback, used when no heading matches, and it always warns. You will see one of these:
+
+- nothing extra, the heading was where it usually is
+- `IMAGE_2: matched the "Living in <City>" h2 at h2 #3, not the usual position` — found it elsewhere, correct, nothing to do
+- `IMAGE_2: nothing matches ... Falling back to h2 #2 "..." by position. Check this one.` — worth opening the output
+- a numbered list asking you to choose, when it cannot tell
+
+That last case looks like this:
+
+```
+  IMAGE_3 needs a section. Expected the "Sightseeing in <City>" h3.
+       1) h2 #1 > h3 #1        "Living in Brussels City Center, the Pentagon and Louise"
+       ...
+       7) h2 #3 > h3 #2        "Things To Do in Brussels"
+       0) skip this image
+  Which one for IMAGE_3? [0-15]: _
+```
+
+Sections already taken by another image are left out of the list, so the same slot cannot get two images.
+
+**In a batch it refuses instead of asking.** With `--all` there is no sensible way to stop and ask, so an undecidable file stops the run with the reason and a pointer to `--outline`. Nothing is guessed.
+
+### Seeing the structure of a file
+
+```bash
+node region-seo-loader.js brussels-en --outline
+```
+
+Prints the h2 and h3 tree, shows where each image would land, then stops without writing anything. This is the first thing to run when a city behaves oddly.
+
+```
+  OK    found 4 h2 section(s), 13 h3 section(s)
+      h2 #1  "Tips for Finding an Apartment in Brussels"
+          h3 #1  "Living in Brussels City Center, the Pentagon and Louise"
+          ...
+      h2 #2  "Rent Prices in Brussels"
+      h2 #3  "Living in Brussels"
+          h3 #2  "Sightseeing in Brussels"
+      h2 #4  "Frequently Asked Questions About Renting in Brussels"
+
+  OK    IMAGE_1 -> h2 #1  "Tips for Finding an Apartment in Brussels"
+  OK    IMAGE_2 -> h2 #3  "Living in Brussels"
+  OK    IMAGE_3 -> h2 #3 > h3 #2  "Sightseeing in Brussels"
+  OK    IMAGE_4 -> h2 #4  "Frequently Asked Questions About Renting in Brussels"
+```
 
 **Safety check.** Before anything goes near the database, the generated file is checked for valid JavaScript. A broken file never reaches Mongo.
 
@@ -328,6 +370,7 @@ You only need these if you want to skip the questions.
 | Flag | What it does |
 | --- | --- |
 | `--all` | Every `.js` in `input/`, instead of naming one city |
+| `--outline` | Print the h2/h3 tree and where each image would land, then stop |
 | `--dry-run` | Prepare and save the output file, never touch a database |
 | `--collection <name>` | Write somewhere other than `regions`. Rarely needed |
 | `--img1` .. `--img4` | The four image links, in `IMAGE_1` to `IMAGE_4` order. Wins over the saved file |
@@ -378,7 +421,7 @@ If a file does not match, the script names the exact thing it could not find and
 
 ## Changing the rules
 
-Two tables near the top of `region-loader.js`.
+Two tables near the top of `region-seo-loader.js`.
 
 Which fields are written only at creation and never touched again:
 
@@ -392,15 +435,17 @@ Anything not in that list goes into `$set` and is replaced on every run. Fields 
 const DROPPED_FIELDS = ['_id'];
 ```
 
-Where the images go:
+Where the images go. Each rule is a heading to match, with a position used only as a fallback:
 
 ```js
 const PLACEMENTS = [
-  { varName: 'IMAGE_1', kind: 'h2', h2Index: 0 },
-  { varName: 'IMAGE_2', kind: 'h2', h2Index: 1 },
-  { varName: 'IMAGE_3', kind: 'h3', h2Index: 1, matchText: /^\s*sightseeing\b/i, fallbackH3Index: 1 },
-  { varName: 'IMAGE_4', kind: 'h2', h2Index: 2 }
+  { varName: 'IMAGE_1', level: 'h2', match: /^\s*tips for finding\b/i,   position: { h2: 0 } },
+  { varName: 'IMAGE_2', level: 'h2', match: /^\s*living in\b/i,          position: { h2: 1 } },
+  { varName: 'IMAGE_3', level: 'h3', match: /^\s*sightseeing\b/i,        position: { h2: 1, h3: 1 } },
+  { varName: 'IMAGE_4', level: 'h2', match: /^\s*(frequently asked questions|faqs?)\b/i, position: { h2: 2 } }
 ];
 ```
+
+If a city words a heading differently and you expect more of them, widen the regex here rather than answering the picker every time.
 
 The prompts, the placement, the generated file and the summaries all read from these, so changing them changes everything consistently.

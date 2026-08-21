@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * region-loader
+ * region-seo-loader
  *
  * Prepares a Wunderflats city landing page seed script and loads it into MongoDB.
  *
@@ -31,9 +31,9 @@
  * Zero dependencies. Node 18+.
  *
  * Usage:
- *   node region-loader.js lisbon-en
- *   node region-loader.js lisbon-en --dry-run
- *   node region-loader.js --all            every .js in input/
+ *   node region-seo-loader.js lisbon-en
+ *   node region-seo-loader.js lisbon-en --dry-run
+ *   node region-seo-loader.js --all            every .js in input/
  *
  * With --all, every file is prepared first and the database is asked for and
  * confirmed once, not once per city. One city failing does not stop the rest.
@@ -88,20 +88,46 @@ const DROPPED_FIELDS = ['_id'];
 
 // Where each image goes. Input files carry EMPTY_IMAGE in every slot, so the
 // script decides placement rather than reading it from the file.
+//
+// Matching is on the heading, never on position. Counting breaks as soon as a
+// city has an extra section: Brussels carries "Rent Prices" as its own h2 while
+// Zurich has it as an h3, which shifts every index after it.
+//
+// `position` is only a last resort, used when no heading matches, and it always
+// warns. When a rule matches nothing and the fallback is missing, or when it
+// matches more than one heading, the script asks rather than guesses.
 const PLACEMENTS = [
-  { varName: 'IMAGE_1', kind: 'h2', h2Index: 0 },
-  { varName: 'IMAGE_2', kind: 'h2', h2Index: 1 },
+  {
+    varName: 'IMAGE_1',
+    level: 'h2',
+    match: /^\s*tips for finding\b/i,
+    describe: 'the "Tips for Finding an Apartment" h2',
+    position: { h2: 0 }
+  },
+  {
+    varName: 'IMAGE_2',
+    level: 'h2',
+    match: /^\s*living in\b/i,
+    describe: 'the "Living in <City>" h2',
+    position: { h2: 1 }
+  },
   {
     varName: 'IMAGE_3',
-    kind: 'h3',
-    h2Index: 1,
-    matchText: /^\s*sightseeing\b/i,
-    fallbackH3Index: 1
+    level: 'h3',
+    match: /^\s*sightseeing\b/i,
+    describe: 'the "Sightseeing in <City>" h3',
+    position: { h2: 1, h3: 1 }
   },
-  { varName: 'IMAGE_4', kind: 'h2', h2Index: 2 }
+  {
+    varName: 'IMAGE_4',
+    level: 'h2',
+    match: /^\s*(frequently asked questions|faqs?)\b/i,
+    describe: 'the "Frequently Asked Questions" h2',
+    position: { h2: 2 }
+  }
 ];
 
-const GENERATED_MARKER = 'region-loader:generated';
+const GENERATED_MARKER = 'region-seo-loader:generated';
 
 const C = {
   reset: '\x1b[0m',
@@ -129,7 +155,7 @@ function fail(msg) {
 
 // Flags that never take a value, so `--all lisbon-en` keeps lisbon-en as the
 // positional argument rather than swallowing it.
-const BOOLEAN_FLAGS = new Set(['all', 'dry-run', 'yes']);
+const BOOLEAN_FLAGS = new Set(['all', 'dry-run', 'yes', 'outline']);
 
 function parseArgs(argv) {
   const out = { _: [], flags: {} };
@@ -671,68 +697,139 @@ function scanImageSlots(lines) {
   return h2s;
 }
 
-function resolvePlacements(h2s) {
+/**
+ * Flattens the outline into addressable slots. The id is stable across a
+ * rescan of the same document, which is what lets a choice made once be
+ * re-applied after the IMAGE_n blocks shift the line numbers.
+ */
+function buildSlotIndex(h2s) {
+  const slots = [];
+  h2s.forEach((h2, i) => {
+    slots.push({
+      id: `h2:${i}`,
+      level: 'h2',
+      slot: h2,
+      text: h2.text,
+      where: `h2 #${i + 1}`,
+      label: `h2 #${i + 1}  "${h2.text || '(no heading)'}"`
+    });
+    h2.h3s.forEach((h3, j) => {
+      slots.push({
+        id: `h2:${i}/h3:${j}`,
+        level: 'h3',
+        slot: h3,
+        text: h3.text,
+        where: `h2 #${i + 1} > h3 #${j + 1}`,
+        label: `    h3 #${j + 1}  "${h3.text || '(no heading)'}"`
+      });
+    });
+  });
+  return slots;
+}
+
+function positionSlot(index, position) {
+  const id =
+    position.h3 === undefined ? `h2:${position.h2}` : `h2:${position.h2}/h3:${position.h3}`;
+  return index.find((s) => s.id === id) || null;
+}
+
+function printOutline(index) {
+  index.forEach((s) => log(`      ${C.dim}${s.label}${C.reset}`));
+}
+
+/**
+ * Decides where each image goes, by heading. Falls back to position with a
+ * warning, and asks when it genuinely cannot tell.
+ */
+async function resolvePlacements(h2s, opts = {}) {
+  const index = buildSlotIndex(h2s);
+  const interactive = opts.interactive !== false && Boolean(process.stdin.isTTY);
   const resolved = [];
   const notes = [];
+  const used = new Set();
 
   for (const p of PLACEMENTS) {
-    const h2 = h2s[p.h2Index];
-    if (!h2) {
-      notes.push({
-        level: 'warn',
-        text: `there is no h2 #${p.h2Index + 1} in this file, so ${p.varName} has nowhere to go`
-      });
-      resolved.push(Object.assign({}, p, { slot: null, where: null, text: null }));
-      continue;
-    }
+    const free = (s) => !used.has(s.id);
+    const candidates = index.filter(
+      (s) => s.level === p.level && s.text && p.match.test(s.text) && free(s)
+    );
 
-    if (p.kind === 'h2') {
-      resolved.push(
-        Object.assign({}, p, { slot: h2, where: `h2 #${p.h2Index + 1}`, text: h2.text })
-      );
-      continue;
-    }
+    let chosen = null;
 
-    const byText = h2.h3s.findIndex((h3) => h3.text && p.matchText.test(h3.text));
-    let index = byText;
-
-    if (byText === -1) {
-      index = p.fallbackH3Index;
-      if (!h2.h3s[index]) {
+    if (candidates.length === 1) {
+      chosen = candidates[0];
+      const byPosition = positionSlot(index, p.position);
+      if (!byPosition || byPosition.id !== chosen.id) {
+        notes.push({
+          level: 'info',
+          text: `${p.varName}: matched ${p.describe} at ${chosen.where}, not the usual position`
+        });
+      }
+    } else if (candidates.length === 0) {
+      const fb = positionSlot(index, p.position);
+      if (fb && free(fb)) {
+        chosen = fb;
         notes.push({
           level: 'warn',
           text:
-            `no h3 matching /${p.matchText.source}/ and no h3 #${index + 1} in ` +
-            `h2 #${p.h2Index + 1}, so ${p.varName} has nowhere to go`
+            `${p.varName}: nothing matches ${p.describe}. Falling back to ` +
+            `${fb.where} "${fb.text}" by position. Check this one.`
         });
-        resolved.push(Object.assign({}, p, { slot: null, where: null, text: null }));
-        continue;
+      } else {
+        notes.push({
+          level: 'warn',
+          text: `${p.varName}: nothing matches ${p.describe}, and no free section at the usual position`
+        });
       }
+    } else {
       notes.push({
         level: 'warn',
         text:
-          `no h3 heading starts with "Sightseeing" in h2 #${p.h2Index + 1}. ` +
-          `Falling back to h3 #${index + 1}: "${h2.h3s[index].text}". Check this one.`
-      });
-    } else if (byText !== p.fallbackH3Index) {
-      notes.push({
-        level: 'info',
-        text:
-          `the "Sightseeing" h3 is #${byText + 1}, not the usual #${p.fallbackH3Index + 1}. ` +
-          `Matched on heading text, not position.`
+          `${p.varName}: ${candidates.length} headings match ${p.describe} ` +
+          `(${candidates.map((c) => `"${c.text}"`).join(', ')})`
       });
     }
 
-    resolved.push(
-      Object.assign({}, p, {
-        slot: h2.h3s[index],
-        where: `h2 #${p.h2Index + 1} > h3 #${index + 1}`,
-        text: h2.h3s[index].text
-      })
-    );
+    // Nothing safe to pick. Ask, rather than guess.
+    if (!chosen) {
+      if (!interactive) {
+        throw new Error(
+          `${p.varName}: cannot decide where this image goes in this file.\n` +
+            `        Expected ${p.describe}.\n` +
+            `        Run without --all in a terminal to choose, or use --outline to see the structure.`
+        );
+      }
+      const options = (candidates.length ? candidates : index).filter(free);
+      log(`\n  ${C.yellow}${p.varName} needs a section.${C.reset} Expected ${p.describe}.`);
+      // Full path, not the indented tree label: used slots are filtered out,
+      // so the indentation would no longer line up.
+      options.forEach((s, i) =>
+        log(
+          `      ${String(i + 1).padStart(2)}) ${s.where.padEnd(20)} "${s.text || '(no heading)'}"`
+        )
+      );
+      log(`       0) skip this image`);
+      const answer = await ask(`  Which one for ${p.varName}? [0-${options.length}]: `);
+      const pick = parseInt(answer, 10);
+      if (pick >= 1 && pick <= options.length) {
+        chosen = options[pick - 1];
+        notes.push({ level: 'info', text: `${p.varName}: you chose ${chosen.where} "${chosen.text}"` });
+      } else {
+        notes.push({ level: 'warn', text: `${p.varName}: skipped` });
+      }
+    }
+
+    if (chosen) used.add(chosen.id);
+    resolved.push({
+      varName: p.varName,
+      id: chosen ? chosen.id : null,
+      slot: chosen ? chosen.slot : null,
+      where: chosen ? chosen.where : null,
+      text: chosen ? chosen.text : null
+    });
   }
 
-  return { resolved, notes };
+  return { resolved, notes, index };
 }
 
 function writeImageSlot(lines, slot, varName) {
@@ -1076,15 +1173,31 @@ async function prepareFile(inputPath, flags, manifest) {
     `found ${h2s.length} h2 section(s), ` +
       `${h2s.reduce((n, h) => n + h.h3s.length, 0)} h3 section(s)`
   );
-  if (h2s.length !== PLACEMENTS.filter((p) => p.kind === 'h2').length) {
-    warn(
-      `expected 3 h2 sections, found ${h2s.length}. ` +
-        `Any image with no matching section will be skipped.`
-    );
+
+  if (flags.outline) {
+    printOutline(buildSlotIndex(h2s));
   }
 
-  const { resolved, notes } = resolvePlacements(h2s);
+  let resolved;
+  let notes;
+  try {
+    ({ resolved, notes } = await resolvePlacements(h2s));
+  } catch (e) {
+    fail(`${stem}: ${e.message}`);
+  }
   notes.forEach((n) => (n.level === 'warn' ? warn(n.text) : info(n.text)));
+
+  if (flags.outline) {
+    log();
+    resolved.forEach((r) =>
+      r.slot
+        ? ok(`${r.varName} -> ${r.where}  "${r.text}"`)
+        : warn(`${r.varName} -> nowhere`)
+    );
+    log(`\n${C.yellow}--outline${C.reset} only, stopping here.\n`);
+    closePrompt();
+    process.exit(0);
+  }
 
   // --- images ------------------------------------------------------------
   log(`\n${C.bold}2. Images${C.reset}`);
@@ -1164,6 +1277,7 @@ async function prepareFile(inputPath, flags, manifest) {
     blocks.push(buildImageBlock(target.varName, parts));
     placed.push({
       varName: target.varName,
+      slotId: target.id,
       where: target.where,
       text: target.text,
       filename: parts.filename,
@@ -1196,13 +1310,14 @@ async function prepareFile(inputPath, flags, manifest) {
     fail(e.message);
   }
 
-  // Line numbers shift when the blocks are inserted, so rescan before writing
-  // the assignments.
+  // Line numbers shift when the blocks are inserted, so rescan and look the
+  // slots up again by id. Ids are positions in the outline, which the insert
+  // does not change, so no question is asked twice.
   lines = src.split('\n');
-  const afterResolved = resolvePlacements(scanImageSlots(lines)).resolved;
+  const afterIndex = buildSlotIndex(scanImageSlots(lines));
   for (const p of placed) {
-    const target = afterResolved.find((r) => r.varName === p.varName);
-    if (!target || !target.slot) fail(`internal: lost the slot for ${p.varName}`);
+    const target = afterIndex.find((s) => s.id === p.slotId);
+    if (!target) fail(`internal: lost the slot for ${p.varName}`);
     writeImageSlot(lines, target.slot, p.varName);
   }
   src = lines.join('\n');
@@ -1294,7 +1409,7 @@ async function prepareFile(inputPath, flags, manifest) {
 async function main() {
   const { _: positional, flags } = parseArgs(process.argv.slice(2));
 
-  log(`\n${C.bold}region-loader${C.reset} ${C.dim}(Wunderflats city landing pages)${C.reset}\n`);
+  log(`\n${C.bold}region-seo-loader${C.reset} ${C.dim}(Wunderflats city landing pages)${C.reset}\n`);
 
   // --- which files -------------------------------------------------------
   let inputPaths;
